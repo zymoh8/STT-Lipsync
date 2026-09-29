@@ -1,0 +1,13 @@
+# Core harness needs nothing beyond the standard library.
+# Everything below is optional; install only what you are benchmarking.
+
+# Faster / better-tested WER (harness falls back to pure python without it)
+jiwer>=3.0
+
+# Config files in YAML (harness falls back to JSON without it)
+PyYAML>=6.0
+
+# --- engines: install per machine, not all at once ---
+# vosk>=0.3.45
+# useful-moonshine-onnx        # Moonshine
+# whisper.cpp is a C++ binary you build - see adapters/whispercpp_adapter.py

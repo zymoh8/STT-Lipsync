@@ -1,0 +1,41 @@
+# Copy to config.yaml and edit paths. config.yaml is gitignored.
+
+test_fraction: 0.3      # speaker-disjoint holdout
+split_seed: 1234        # never change this mid-project
+
+models:
+  # ---- baseline: what the project runs today ----
+  - engine: vosk
+    label: vosk-small-0.15
+    model_path: /home/lipsync/models/vosk-model-small-en-us-0.15
+
+  # ---- the free win: same API, one path change ----
+  - engine: vosk
+    label: vosk-0.22
+    model_path: /home/lipsync/models/vosk-model-en-us-0.22
+
+  - engine: vosk
+    label: vosk-0.22-lgraph          # 128 MB - the small-board option
+    model_path: /home/lipsync/models/vosk-model-en-us-0.22-lgraph
+
+  - engine: vosk
+    label: vosk-gigaspeech-0.42      # most speaker-diverse training data
+    model_path: /home/lipsync/models/vosk-model-en-us-0.42-gigaspeech
+
+  # ---- whisper.cpp ----
+  - engine: whispercpp
+    label: whisper-base.en
+    binary: /home/lipsync/whisper.cpp/build/bin/whisper-cli
+    model: /home/lipsync/whisper.cpp/models/ggml-base.en.bin
+    threads: 4
+
+  - engine: whispercpp
+    label: whisper-small.en          # viable: you are not streaming
+    binary: /home/lipsync/whisper.cpp/build/bin/whisper-cli
+    model: /home/lipsync/whisper.cpp/models/ggml-small.en.bin
+    threads: 4
+
+  # ---- moonshine ----
+  - engine: moonshine
+    label: moonshine-base
+    model: moonshine/base
