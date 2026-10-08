@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stt-bench"
+version = "0.1.0"
+description = "Local, extensible speech-to-text evaluation framework"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+vosk = ["vosk>=0.3.45,<0.4"]
+
+[project.scripts]
+stt-bench = "stt_bench.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stt_bench*"]
