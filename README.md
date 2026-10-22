@@ -65,16 +65,145 @@ Compare multiple downloaded models by repeating `--vosk` with unique names:
 ```bash
 python3 -m stt_bench run data/manifest.jsonl \
   --vosk small=models/vosk-model-small-en-us-0.15 \
-  --vosk large=models/your-other-extracted-model \
+  --vosk large=models/vosk-model-en-us-0.22 \
+  --vosk lgraph=models/vosk-model-en-us-0.22-lgraph \
   --output results/comparison
 ```
+
+All three use the same `VoskModel` adapter; downloaded model folders are weights,
+not Python modules to import in `models.py`. Vosk handles the lgraph model's
+dynamic graph files when loading its directory. This benchmark uses its default
+vocabulary, without a custom grammar.
 
 This adapter follows [Vosk's Python example](https://github.com/alphacep/vosk-api/blob/master/python/example/test_simple.py):
 it passes PCM chunks to a fresh recognizer for each recording and joins completed segments
 with the final result. The model weights are loaded once per run. WAV container headers
 are excluded from the bytes passed to the recognizer.
 
+## Run Whisper, Wav2Vec2, and Parakeet
+
+Activate `conda activate STT`, or recreate the environment with
+`conda env create -f environment.yml`. For an existing Python environment,
+install `python -m pip install -e ".[vosk,transformers]"`.
+
+Download the official Transformers weights (skip duplicate backend formats):
+
+```bash
+hf download openai/whisper-small --local-dir models/whisper-small --include '*.json' '*.safetensors' '*.txt' '*.model' 'README.md' 'LICENSE*'
+hf download facebook/wav2vec2-base-960h --local-dir models/wav2vec2-base-960h --include '*.json' '*.safetensors' '*.txt' '*.model' 'README.md' 'LICENSE*'
+hf download nvidia/parakeet-tdt-0.6b-v3 --local-dir models/parakeet-tdt-0.6b-v3 --include '*.json' '*.safetensors' '*.txt' '*.model' 'README.md' 'LICENSE*'
+```
+
+Run all three, optionally adding the existing `--vosk` options to the same command:
+
+```bash
+python -m stt_bench run data/manifest.jsonl \
+  --whisper whisper=models/whisper-small \
+  --wav2vec2 wav2vec2=models/wav2vec2-base-960h \
+  --parakeet parakeet=models/parakeet-tdt-0.6b-v3 \
+  --output results/non-vosk
+```
+
+These adapters load only local files, run float32 CPU inference, and require
+16 kHz, 16-bit mono PCM WAV. All requested models remain loaded for the run;
+run models separately if memory is limited. Whisper transcribes in the detected
+language (rather than translating). Wav2Vec2 uses greedy CTC decoding without
+an external language model, with 30-second chunks and 5-second overlap.
+Parakeet processes each complete recording, so start with short recordings.
+These are file transcription adapters, not streaming latency measurements.
+
+Official model cards: [Whisper Small](https://huggingface.co/openai/whisper-small),
+[Wav2Vec2 Base 960h](https://huggingface.co/facebook/wav2vec2-base-960h),
+and [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+Parakeet weights use CC BY 4.0; retain the downloaded attribution/license files.
+
+## Evaluate TORGO male dysarthric speech
+
+Extract `M.tar.bz2` into `data/torgo/` so it contains `M01/` through `M05/`.
+Keep the archive and extracted data out of Git. Only the `prompts/` and
+`wav_headMic/` or `wav_arrayMic/` files are needed for this acoustic benchmark.
+
+```bash
+conda activate STT
+python -m stt_bench import-torgo data/torgo \
+  --microphone headMic --output data/torgo-manifest.jsonl
+
+python -m stt_bench run data/torgo-manifest.jsonl \
+  --vosk vosk-small=models/vosk-model-small-en-us-0.15 \
+  --vosk vosk-lgraph=models/vosk-model-en-us-0.22-lgraph \
+  --vosk vosk-large=models/vosk-model-en-us-0.22 \
+  --whisper whisper=models/whisper-small \
+  --wav2vec2 wav2vec2=models/wav2vec2-base-960h \
+  --parakeet parakeet=models/parakeet-tdt-0.6b-v3 \
+  --output results/torgo-headmic
+```
+
+The importer selects M01–M05, excludes controls, pairs each WAV with its session's
+same-numbered `.txt` prompt, validates audio, and creates unique IDs across
+speakers and sessions. Choose one microphone for the comparison; using both
+would count two recordings of the same utterance. Missing microphone sessions
+are logged without switching microphones. Use `--microphone arrayMic` and a new
+output manifest to evaluate that microphone separately.
+
+Review `data/torgo-manifest.audit.json` for missing, malformed, empty, `xxx`,
+image-description, and annotated/phonetic prompts. Such files are excluded,
+not labeled as silence. The filters are conservative and cannot identify every
+non-word task. Supplied prompts describe intended speech and must be checked
+against the audio before interpreting WER as verbatim transcription accuracy.
+Image-description recordings need separately transcribed references.
+
+JSON/CSV results retain speaker, session, microphone, and reference type so you
+can compare speakers separately as well as viewing corpus scores. Start with
+a small manifest to estimate runtime; all six models are loaded together and
+CPU inference over the full corpus can take substantial time. This cohort
+measures recognition on male dysarthric speech, not general-population accuracy.
+
+See the [official TORGO documentation](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html)
+for recording notes, task definitions, and academic-use/citation requirements.
+
+The current extracted male archive yields 1,920 head-microphone recordings after
+filtering, with 118 exclusions/session issues recorded in the audit. The generated
+`data/torgo-pilot.jsonl` selects one word and one sentence per speaker (10 clips).
+Use that manifest in the same six-model command for a quick integration run.
+Its initial results are in `results/torgo-pilot/`: all 60 predictions completed.
+Whisper used automatic language detection and produced incorrect-language and
+repetitive outputs on some clips. These pilot scores are diagnostic, not a
+validated ranking of the models on the full cohort.
+
 ## Understand the reports
+
+The completed six-model TORGO benchmark is available in the
+[PDF report](output/pdf/torgo-six-model-benchmark.pdf), including model specifications
+and Raspberry Pi feasibility guidance. Model weights, downloaded TORGO audio,
+generated manifests/audits, and raw result files are kept out of Git. Generate a
+local manifest with `import-torgo` before running the benchmark below.
+
+For a complete six-model run with per-recording checkpoints and progress logs:
+
+```bash
+python scripts/run_full_benchmark.py data/torgo-manifest.jsonl \
+  --output results/torgo-full --threads 4
+python scripts/validate_benchmark.py results/torgo-full/report.json \
+  --manifest data/torgo-manifest.jsonl
+python scripts/make_benchmark_report.py results/torgo-full/report.json \
+  --manifest data/torgo-manifest.jsonl \
+  --output output/pdf/torgo-six-model-benchmark.pdf
+```
+
+The first command resumes completed IDs from its JSONL checkpoints and verifies
+the saved manifest/configuration before continuing. `--only MODEL` runs a single
+model worker; `--finalize-only` merges completed workers without inference.
+Whisper can be partitioned into separate processes with `--parts N --part I`;
+each partition writes its own checkpoint. Keep partition counts fixed during a
+run. `--sample-workers N` is available only for Vosk's independent recognizers.
+Workers must finish before finalizing. Concurrent-worker timing is observational
+under shared load and should not be treated as an isolated speed comparison.
+
+The PDF generator needs `reportlab`, `matplotlib`, and Arial font files from
+macOS. It writes `analysis.json`, `leaderboard.csv`, and `per-speaker.csv` beside
+the raw report. The primary ranking averages corpus WER equally over speakers;
+it also reports pooled WER/CER, per-recording averages, exact matches, timing,
+word/multi-word subsets, failures, and a duration-outlier sensitivity check.
 
 `report.json` contains raw and normalized transcripts, edit counts, sample durations,
 transcription times, errors, PCM hashes, model metadata, and aggregated scores.

@@ -1,16 +1,17 @@
 import io
+import importlib.util
 import json
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import wave
 
 from stt_bench.audio import Audio, load_audio, prepare_audio
 from stt_bench.cli import main, make_demo
 from stt_bench.metrics import edit_counts, normalize, score
-from stt_bench.models import PredictionsModel, VoskModel
+from stt_bench.models import PredictionsModel, VoskModel, WhisperModel, Wav2Vec2Model, ParakeetModel
 from stt_bench.runner import evaluate, load_manifest
 
 
@@ -82,7 +83,7 @@ class PipelineTests(unittest.TestCase):
     def test_manifest_validation_and_relative_paths(self):
         make_demo(self.directory)
         path = self.directory / "manifest.jsonl"
-        self.assertEqual(load_manifest(path)[0]["audio"], str(self.directory / "silence.wav"))
+        self.assertEqual(load_manifest(path)[0]["audio"], str((self.directory / "silence.wav").resolve()))
         path.write_text(path.read_text() * 2)
         with self.assertRaises(ValueError):
             load_manifest(path)
@@ -96,11 +97,15 @@ class PipelineTests(unittest.TestCase):
         write_wav(path)
         samples = [{"id": "short", "audio": str(path), "reference": "a"},
                    {"id": "long", "audio": str(path), "reference": "a b c"}]
+        samples[0].update(speaker="M01", session="Session1", microphone="headMic",
+                          reference_type="supplied_prompt")
         a = self.directory / "a.json"
         b = self.directory / "b.json"
         a.write_text(json.dumps({"short": "wrong", "long": "a b c"}))
         b.write_text(json.dumps({"long": "a b c"}))
         report = evaluate(samples, [PredictionsModel("a", a), PredictionsModel("b", b)])
+        self.assertEqual(report["results"][0]["speaker"], "M01")
+        self.assertEqual(report["results"][0]["reference_type"], "supplied_prompt")
         self.assertEqual(report["summary"]["a"]["successful_word"]["rate"], .25)
         self.assertEqual(report["summary"]["b"]["failed_samples"], 1)
         self.assertEqual(report["common_sample_ids"], ["long"])
@@ -136,6 +141,50 @@ class PipelineTests(unittest.TestCase):
         for _ in range(2):
             self.assertEqual(adapter.transcribe(audio, "x"), "first segment last segment")
         self.assertEqual(Recognizer.instances, 2)
+
+    def test_checkpoint_callback_errors_propagate(self):
+        path = self.directory / "audio.wav"
+        write_wav(path)
+        predictions = self.directory / "predictions.json"
+        predictions.write_text('{"x":"hello"}')
+        model = PredictionsModel("saved", predictions)
+        callback = Mock(side_effect=OSError("checkpoint disk failure"))
+        with self.assertRaisesRegex(OSError, "checkpoint disk failure"):
+            evaluate([{"id": "x", "audio": str(path), "reference": "hello"}], [model], on_result=callback)
+        callback.assert_called_once()
+
+    @unittest.skipUnless(importlib.util.find_spec("numpy"), "NumPy unavailable")
+    def test_transformers_pcm_conversion_and_sample_rate_validation(self):
+        for adapter_type in (WhisperModel, Wav2Vec2Model, ParakeetModel):
+            adapter = adapter_type.__new__(adapter_type)
+            adapter._pipeline = Mock(return_value={"text": " recognized words "})
+            audio = Audio(b"\x00\x80\x00\x00\xff\x7f", 16000)
+            self.assertEqual(adapter.transcribe(audio, "pcm"), "recognized words")
+            inputs = adapter._pipeline.call_args.args[0]
+            self.assertEqual(inputs["sampling_rate"], 16000)
+            self.assertEqual(inputs["raw"].tolist(), [-1.0, 0.0, 32767 / 32768])
+            with self.assertRaises(ValueError):
+                adapter.transcribe(Audio(audio.pcm, 8000), "wrong-rate")
+
+    def test_cli_routes_all_transformers_models_and_rejects_duplicate_names(self):
+        make_demo(self.directory)
+        prediction = self.directory / "predictions.json"
+        arguments = ["run", str(self.directory / "manifest.jsonl"),
+                     "--whisper", "whisper=models/whisper-small",
+                     "--wav2vec2", "wav2vec2=models/wav2vec2-base-960h",
+                     "--parakeet", "parakeet=models/parakeet-tdt-0.6b-v3",
+                     "--output", str(self.directory / "results")]
+        def saved(name, path):
+            return PredictionsModel(name, prediction)
+        with patch("stt_bench.cli.WhisperModel", side_effect=saved) as whisper, \
+                patch("stt_bench.cli.Wav2Vec2Model", side_effect=saved) as wav2vec, \
+                patch("stt_bench.cli.ParakeetModel", side_effect=saved) as parakeet, \
+                patch("sys.stdout", new_callable=io.StringIO), \
+                patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(main(arguments), 0)
+            for factory in (whisper, wav2vec, parakeet):
+                factory.assert_called_once()
+            self.assertEqual(main(arguments + ["--vosk", "whisper=models/duplicate"]), 1)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg unavailable")
     def test_prepare_downmix_and_resample(self):

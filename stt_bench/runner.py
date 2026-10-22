@@ -34,19 +34,26 @@ def load_manifest(path: Path) -> list[dict]:
 
 
 def evaluate(samples: list[dict], models: list[STTModel], *, sample_rate: int = 16000,
-             normalize_text: bool = True) -> dict:
+             normalize_text: bool = True, on_result=None) -> dict:
     if not models or len({model.name for model in models}) != len(models):
         raise ValueError("Supply at least one model with unique names")
     rows = []
+    def record(row):
+        rows.append(row)
+        if on_result is not None:
+            on_result(row)
     # Load one recording at a time; every adapter receives identical decoded bytes.
     for sample in samples:
         base = {"sample_id": sample["id"], "audio": sample["audio"],
                 "reference": sample["reference"]}
+        for key in ("speaker", "session", "microphone", "reference_source", "reference_type"):
+            if key in sample:
+                base[key] = sample[key]
         try:
             audio = load_audio(sample["audio"], sample_rate)
         except Exception as exc:
             for model in models:
-                rows.append({**base, "model": model.name, "status": "error",
+                record({**base, "model": model.name, "status": "error",
                              "error": f"{type(exc).__name__}: {exc}"})
             continue
         base.update(duration_seconds=audio.duration_seconds,
@@ -58,13 +65,15 @@ def evaluate(samples: list[dict], models: list[STTModel], *, sample_rate: int = 
                 elapsed = time.perf_counter() - started
                 if not isinstance(hypothesis, str):
                     raise TypeError("Model must return a transcript string")
-                rows.append({**base, "model": model.name, "status": "ok",
+                result = {**base, "model": model.name, "status": "ok",
                              "hypothesis": hypothesis, "transcription_seconds": elapsed,
                              "real_time_factor": elapsed / audio.duration_seconds,
-                             **score(sample["reference"], hypothesis, normalize_text)})
+                             **score(sample["reference"], hypothesis, normalize_text)}
             except Exception as exc:
-                rows.append({**base, "model": model.name, "status": "error",
-                             "error": f"{type(exc).__name__}: {exc}"})
+                result = {**base, "model": model.name, "status": "error",
+                          "error": f"{type(exc).__name__}: {exc}"}
+            # Checkpoint/storage errors must stop the run, not become model failures.
+            record(result)
     summaries = {}
     # Compare summary rates only when models completed the same samples.
     common_ids = set.intersection(*[

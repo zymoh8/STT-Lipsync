@@ -5,3 +5,9 @@ models/
 results/
 demo/
 data/audio/
+data/torgo/
+tests/*.tar.bz2
+.DS_Store
+tmp/
+data/torgo-*.jsonl
+data/torgo-*.audit.json

@@ -10,7 +10,9 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-vosk = ["vosk>=0.3.45,<0.4"]
+vosk = ["vosk>=0.3.44,<0.4"]
+transformers = ["transformers>=5.20.2,<6", "torch>=2.6", "torchaudio>=2.6", "numpy", "scipy", "soundfile", "librosa>=0.11", "huggingface_hub"]
+reports = ["reportlab>=4,<6", "matplotlib>=3.9,<4", "pypdf>=5", "rapidfuzz>=3"]
 
 [project.scripts]
 stt-bench = "stt_bench.cli:main"

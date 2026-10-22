@@ -7,8 +7,9 @@ import sys
 import wave
 
 from .audio import load_audio, prepare_audio
-from .models import PredictionsModel, VoskModel
+from .models import PredictionsModel, VoskModel, WhisperModel, Wav2Vec2Model, ParakeetModel
 from .runner import evaluate, load_manifest
+from .torgo import import_torgo
 
 
 def model_spec(value: str):
@@ -43,9 +44,16 @@ def main(argv=None):
     prepare.add_argument("--sample-rate", type=int, default=16000)
     demo = commands.add_parser("demo", help="Generate one second of silence and saved predictions")
     demo.add_argument("--directory", type=Path, default=Path("demo"))
+    torgo = commands.add_parser("import-torgo", help="Index extracted male dysarthric TORGO audio")
+    torgo.add_argument("root", type=Path)
+    torgo.add_argument("--microphone", choices=("headMic", "arrayMic"), default="headMic")
+    torgo.add_argument("--output", type=Path, default=Path("data/torgo-manifest.jsonl"))
     run = commands.add_parser("run", help="Run models and write JSON/CSV reports")
     run.add_argument("manifest", type=Path)
     run.add_argument("--vosk", type=model_spec, action="append", default=[], metavar="NAME=MODEL_DIR")
+    for family in ("whisper", "wav2vec2", "parakeet"):
+        run.add_argument(f"--{family}", type=model_spec, action="append", default=[],
+                         metavar="NAME=MODEL_DIR", help="Local Transformers model (CPU)")
     run.add_argument("--predictions", type=model_spec, action="append", default=[], metavar="NAME=JSON")
     run.add_argument("--sample-rate", type=int, default=16000)
     run.add_argument("--raw-text", action="store_true", help="Disable text normalization")
@@ -54,7 +62,13 @@ def main(argv=None):
     try:
         if getattr(args, "sample_rate", 16000) <= 0:
             raise ValueError("Sample rate must be positive")
-        if args.command == "demo":
+        if args.command == "import-torgo":
+            audit = import_torgo(args.root, args.output, args.microphone)
+            print(f"Included {audit['included_samples']} recordings; "
+                  f"{len(audit['skipped'])} exclusions/issues. Review {args.output.with_suffix('.audit.json')}")
+            print(f"Manifest: {args.output}; references are supplied prompts and need review")
+            return 0 if audit["included_samples"] else 1
+        elif args.command == "demo":
             make_demo(args.directory)
             print(f"Created silence demo in {args.directory} (pipeline check, not an accuracy benchmark)")
         elif args.command == "inspect":
@@ -67,21 +81,25 @@ def main(argv=None):
             print(f"Prepared {args.destination}")
         else:
             samples = load_manifest(args.manifest)
-            specs = args.vosk + args.predictions
+            specs = args.vosk + args.whisper + args.wav2vec2 + args.parakeet + args.predictions
             if not specs or len({name for name, _ in specs}) != len(specs):
-                raise ValueError("Supply --vosk and/or --predictions with unique model names")
+                raise ValueError("Supply at least one model option with unique model names")
             json_path = args.output / "report.json"
             csv_path = args.output / "samples.csv"
             if json_path.exists() or csv_path.exists():
                 raise ValueError("Report already exists; choose a new --output directory")
             models = [VoskModel(name, path) for name, path in args.vosk]
+            for adapter, entries in ((WhisperModel, args.whisper), (Wav2Vec2Model, args.wav2vec2),
+                                     (ParakeetModel, args.parakeet)):
+                models += [adapter(name, path) for name, path in entries]
             models += [PredictionsModel(name, path) for name, path in args.predictions]
             report = evaluate(samples, models, sample_rate=args.sample_rate,
                               normalize_text=not args.raw_text)
             report["manifest"] = str(args.manifest.resolve())
             args.output.mkdir(parents=True, exist_ok=True)
             json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            fields = ["sample_id", "model", "status", "reference", "hypothesis", "wer", "cer",
+            fields = ["sample_id", "speaker", "session", "microphone", "reference_type",
+                      "model", "status", "reference", "hypothesis", "wer", "cer",
                       "duration_seconds", "transcription_seconds", "real_time_factor", "error"]
             with csv_path.open("w", encoding="utf-8", newline="") as output:
                 writer = csv.DictWriter(output, fieldnames=fields)
